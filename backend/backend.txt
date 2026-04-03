@@ -1,0 +1,1 @@
+Core del sistema (Node + MQTT + DB)
