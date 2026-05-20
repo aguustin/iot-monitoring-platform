@@ -10,7 +10,7 @@ import json
 import random
 import signal
 import sys
-import time
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -99,6 +99,20 @@ def create_client() -> mqtt.Client:
     client.on_disconnect = on_disconnect
     return client
 
+# ── Device loop ────────────────────────────────────────────────────────────────
+
+def device_loop(client: mqtt.Client, device: dict, stop_event: threading.Event) -> None:
+    topic = f"iot/devices/{device['id']}/telemetry"
+    while not stop_event.is_set():
+        payload = build_payload(device)
+        client.publish(topic, json.dumps(payload), qos=1)
+
+        temp = payload["sensors"]["temperature"]["value"]
+        hum  = payload["sensors"]["humidity"]["value"]
+        print(f"[{device['id']}] → {topic} | temp={temp}°C  hum={hum}%")
+
+        stop_event.wait(PUBLISH_INTERVAL)
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def run():
@@ -112,8 +126,11 @@ def run():
 
     client.loop_start()
 
-    def shutdown(sig, frame):
+    stop_event = threading.Event()
+
+    def shutdown(*_):
         print("\n[SIM] Deteniendo simulador...")
+        stop_event.set()
         client.loop_stop()
         client.disconnect()
         sys.exit(0)
@@ -121,19 +138,17 @@ def run():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    print(f"[SIM] Simulando {len(DEVICES)} dispositivos cada {PUBLISH_INTERVAL}s. Ctrl+C para detener.\n")
+    print(f"[SIM] Simulando {len(DEVICES)} dispositivos cada {PUBLISH_INTERVAL}s en paralelo. Ctrl+C para detener.\n")
 
-    while True:
-        for device in DEVICES:
-            payload = build_payload(device)
-            topic = f"iot/devices/{device['id']}/telemetry"
-            result = client.publish(topic, json.dumps(payload), qos=1)
+    threads = [
+        threading.Thread(target=device_loop, args=(client, device, stop_event), daemon=True)
+        for device in DEVICES
+    ]
+    for t in threads:
+        t.start()
 
-            temp = payload["sensors"]["temperature"]["value"]
-            hum  = payload["sensors"]["humidity"]["value"]
-            print(f"[{device['id']}] → {topic} | temp={temp}°C  hum={hum}%")
-
-        time.sleep(PUBLISH_INTERVAL)
+    for t in threads:
+        t.join()
 
 
 if __name__ == "__main__":
